@@ -1,0 +1,150 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Definition of the design system. All colors, gradients, fonts, etc should be defined here. 
+All colors MUST be HSL.
+*/
+
+@layer base {
+  :root {
+    /* Cyber Forensics Dark Theme */
+    --background: 220 15% 8%;
+    --foreground: 174 100% 85%;
+
+    --card: 220 15% 10%;
+    --card-foreground: 174 80% 90%;
+
+    --popover: 220 15% 12%;
+    --popover-foreground: 174 80% 90%;
+
+    --primary: 174 100% 50%;
+    --primary-foreground: 220 15% 8%;
+
+    --secondary: 220 15% 15%;
+    --secondary-foreground: 174 80% 85%;
+
+    --muted: 220 15% 12%;
+    --muted-foreground: 220 10% 60%;
+
+    --accent: 200 100% 60%;
+    --accent-foreground: 220 15% 8%;
+
+    --destructive: 0 100% 60%;
+    --destructive-foreground: 220 15% 8%;
+
+    --success: 120 100% 50%;
+    --success-foreground: 220 15% 8%;
+
+    --warning: 45 100% 60%;
+    --warning-foreground: 220 15% 8%;
+
+    --border: 220 15% 20%;
+    --input: 220 15% 15%;
+    --ring: 174 100% 50%;
+
+    --radius: 0.375rem;
+
+    /* Custom forensics colors */
+    --cyber-grid: 174 100% 50%;
+    --terminal-glow: 174 100% 50%;
+    --alert-pulse: 0 100% 60%;
+    --data-stream: 120 100% 50%;
+
+    /* Gradients */
+    --gradient-cyber: linear-gradient(135deg, hsl(174, 100%, 50%), hsl(200, 100%, 60%));
+    --gradient-alert: linear-gradient(135deg, hsl(0, 100%, 60%), hsl(15, 100%, 55%));
+    --gradient-terminal: linear-gradient(180deg, hsl(220, 15%, 10%), hsl(220, 15%, 8%));
+
+    /* Shadows & Effects */
+    --shadow-cyber: 0 0 20px hsl(174, 100%, 50% / 0.3);
+    --shadow-glow: 0 0 30px hsl(var(--terminal-glow) / 0.5);
+    --shadow-alert: 0 0 15px hsl(0, 100%, 60% / 0.4);
+
+    /* Animations */
+    --transition-cyber: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    --pulse-duration: 2s;
+
+    --sidebar-background: 0 0% 98%;
+
+    --sidebar-foreground: 240 5.3% 26.1%;
+
+    --sidebar-primary: 240 5.9% 10%;
+
+    --sidebar-primary-foreground: 0 0% 98%;
+
+    --sidebar-accent: 240 4.8% 95.9%;
+
+    --sidebar-accent-foreground: 240 5.9% 10%;
+
+    --sidebar-border: 220 13% 91%;
+
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+
+  /* Custom forensics utility classes */
+  .terminal-grid {
+    background-image: 
+      linear-gradient(rgba(0, 255, 204, 0.1) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0, 255, 204, 0.1) 1px, transparent 1px);
+    background-size: 20px 20px;
+  }
+  
+  .cyber-glow {
+    box-shadow: var(--shadow-cyber);
+  }
+  
+  .alert-glow {
+    box-shadow: var(--shadow-alert);
+  }
+  
+  .data-stream {
+    background: var(--gradient-terminal);
+    border-left: 2px solid hsl(var(--primary));
+  }
+  
+  .pulse-alert {
+    animation: pulse-alert var(--pulse-duration) infinite;
+  }
+
+  @keyframes pulse-alert {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+  }
+  
+  @keyframes data-flow {
+    0% { transform: translateY(20px); opacity: 0; }
+    100% { transform: translateY(0); opacity: 1; }
+  }
+  
+  .animate-data-flow {
+    animation: data-flow 0.3s ease-out;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-mono;
+  }
+  
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 8px;
+  }
+  
+  ::-webkit-scrollbar-track {
+    @apply bg-muted;
+  }
+  
+  ::-webkit-scrollbar-thumb {
+    @apply bg-primary rounded-full;
+  }
+  
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-primary/80;
+  }
+}
