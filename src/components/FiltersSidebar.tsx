@@ -1,12 +1,13 @@
-import { useState } from "react";
+import { useMemo } from "react";
 import { Filter, X, Shield, AlertTriangle, Phone, Network } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
+import type { DissectedPacket } from "@/lib/pcapParser";
 
-interface FilterState {
+export interface FilterState {
   protocols: string[];
   encryption: string[];
   alertTypes: string[];
@@ -16,38 +17,98 @@ interface FilterState {
 interface FiltersSidebarProps {
   filters: FilterState;
   onFiltersChange: (filters: FilterState) => void;
+  packets?: DissectedPacket[];
 }
 
-export const FiltersSidebar = ({ filters, onFiltersChange }: FiltersSidebarProps) => {
+export const FiltersSidebar = ({ filters, onFiltersChange, packets = [] }: FiltersSidebarProps) => {
   const activeFilters = Object.values(filters).reduce((total, arr) => total + arr.length, 0);
 
+  // Dynamically calculate packet counts per category from actual packets
+  const counts = useMemo(() => {
+    const protoCounts: Record<string, number> = {
+      sip: 0,
+      rtp: 0,
+      rtcp: 0,
+      tcp: 0,
+      udp: 0,
+      tls: 0
+    };
+    const encCounts: Record<string, number> = {
+      encrypted: 0,
+      unencrypted: 0
+    };
+    const alertCounts: Record<string, number> = {
+      'failed-calls': 0,
+      'malformed': 0,
+      'suspicious-ip': 0,
+      'auth-failure': 0,
+      'unusual-ports': 0
+    };
+    const callCounts: Record<string, number> = {
+      incoming: 0,
+      outgoing: 0,
+      internal: 0,
+      conference: 0
+    };
+
+    for (const p of packets) {
+      // Protocols
+      const proto = p.protocol.toLowerCase();
+      if (proto in protoCounts) {
+        protoCounts[proto]++;
+      }
+      if (p.encrypted && proto !== 'tls') {
+        protoCounts.tls++;
+      }
+
+      // Encryption
+      if (p.encrypted) {
+        encCounts.encrypted++;
+      } else {
+        encCounts.unencrypted++;
+      }
+
+      // Alerts
+      if (p.alertType && p.alertType in alertCounts) {
+        alertCounts[p.alertType]++;
+      }
+
+      // Call Types
+      if (p.callType && p.callType in callCounts) {
+        callCounts[p.callType]++;
+      }
+    }
+
+    return { protoCounts, encCounts, alertCounts, callCounts };
+  }, [packets]);
+
   const protocolOptions = [
-    { id: 'sip', label: 'SIP', count: 234 },
-    { id: 'rtp', label: 'RTP', count: 156 },
-    { id: 'rtcp', label: 'RTCP', count: 89 },
-    { id: 'tcp', label: 'TCP', count: 45 },
-    { id: 'udp', label: 'UDP', count: 298 },
-    { id: 'tls', label: 'TLS', count: 67 }
+    { id: 'sip', label: 'SIP', count: counts.protoCounts.sip },
+    { id: 'rtp', label: 'RTP', count: counts.protoCounts.rtp },
+    { id: 'rtcp', label: 'RTCP', count: counts.protoCounts.rtcp },
+    { id: 'tcp', label: 'TCP', count: counts.protoCounts.tcp },
+    { id: 'udp', label: 'UDP', count: counts.protoCounts.udp },
+    { id: 'tls', label: 'TLS', count: counts.protoCounts.tls }
   ];
 
   const encryptionOptions = [
-    { id: 'encrypted', label: 'Encrypted', count: 134, icon: Shield },
-    { id: 'unencrypted', label: 'Unencrypted', count: 89, icon: Network }
+    { id: 'encrypted', label: 'Encrypted', count: counts.encCounts.encrypted, icon: Shield },
+    { id: 'unencrypted', label: 'Unencrypted', count: counts.encCounts.unencrypted, icon: Network }
   ];
 
   const alertOptions = [
-    { id: 'failed-calls', label: 'Failed Calls', count: 12, severity: 'high' },
-    { id: 'malformed', label: 'Malformed Headers', count: 8, severity: 'medium' },
-    { id: 'suspicious-ip', label: 'Suspicious IPs', count: 5, severity: 'high' },
-    { id: 'auth-failure', label: 'Auth Failures', count: 15, severity: 'medium' },
-    { id: 'unusual-ports', label: 'Unusual Ports', count: 3, severity: 'low' }
+    { id: 'failed-calls', label: 'Failed Calls', count: counts.alertCounts['failed-calls'], severity: 'high' },
+    { id: 'malformed', label: 'Malformed Headers', count: counts.alertCounts['malformed'], severity: 'medium' },
+    { id: 'suspicious-ip', label: 'Suspicious IPs', count: counts.alertCounts['suspicious-ip'], severity: 'high' },
+    { id: 'auth-failure', label: 'Auth Failures', count: counts.alertCounts['auth-failure'], severity: 'medium' },
+    { id: 'unusual-ports', label: 'Unusual Ports', count: counts.alertCounts['unusual-ports'], severity: 'low' }
   ];
 
   const callTypeOptions = [
-    { id: 'incoming', label: 'Incoming Calls', count: 45 },
-    { id: 'outgoing', label: 'Outgoing Calls', count: 38 },
-    { id: 'internal', label: 'Internal Calls', count: 67 },
-    { id: 'conference', label: 'Conference Calls', count: 12 }
+    { id: 'incoming', label: 'Incoming Calls', count: counts.callCounts.incoming },
+    { id: 'outgoing', label: 'Outgoing Calls', count: counts.callCounts.outgoing },
+    { id: 'internal', label: 'Internal Calls', count: counts.callCounts.internal },
+    { id: 'conference', label: 'Conference Calls', count: counts.callCounts.conference }
   ];
 
   const handleFilterChange = (category: keyof FilterState, value: string, checked: boolean) => {
@@ -125,12 +186,12 @@ export const FiltersSidebar = ({ filters, onFiltersChange }: FiltersSidebarProps
                   />
                   <label
                     htmlFor={protocol.id}
-                    className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+                    className="text-sm font-medium leading-none cursor-pointer peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
                   >
                     {protocol.label}
                   </label>
                 </div>
-                <Badge variant="secondary" className="text-xs">
+                <Badge variant="secondary" className="text-xs font-mono">
                   {protocol.count}
                 </Badge>
               </div>
@@ -159,13 +220,13 @@ export const FiltersSidebar = ({ filters, onFiltersChange }: FiltersSidebarProps
                   />
                   <label
                     htmlFor={option.id}
-                    className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 flex items-center gap-2"
+                    className="text-sm font-medium leading-none cursor-pointer peer-disabled:cursor-not-allowed peer-disabled:opacity-70 flex items-center gap-2"
                   >
                     <option.icon className="h-3 w-3" />
                     {option.label}
                   </label>
                 </div>
-                <Badge variant="secondary" className="text-xs">
+                <Badge variant="secondary" className="text-xs font-mono">
                   {option.count}
                 </Badge>
               </div>
@@ -194,14 +255,14 @@ export const FiltersSidebar = ({ filters, onFiltersChange }: FiltersSidebarProps
                   />
                   <label
                     htmlFor={alert.id}
-                    className={`text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 ${getSeverityColor(alert.severity)}`}
+                    className={`text-sm font-medium leading-none cursor-pointer peer-disabled:cursor-not-allowed peer-disabled:opacity-70 ${alert.count > 0 ? getSeverityColor(alert.severity) : 'text-muted-foreground'}`}
                   >
                     {alert.label}
                   </label>
                 </div>
                 <Badge 
                   variant="secondary" 
-                  className={`text-xs ${getSeverityColor(alert.severity)}`}
+                  className={`text-xs font-mono ${alert.count > 0 ? getSeverityColor(alert.severity) : ''}`}
                 >
                   {alert.count}
                 </Badge>
@@ -231,12 +292,12 @@ export const FiltersSidebar = ({ filters, onFiltersChange }: FiltersSidebarProps
                   />
                   <label
                     htmlFor={callType.id}
-                    className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+                    className="text-sm font-medium leading-none cursor-pointer peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
                   >
                     {callType.label}
                   </label>
                 </div>
-                <Badge variant="secondary" className="text-xs">
+                <Badge variant="secondary" className="text-xs font-mono">
                   {callType.count}
                 </Badge>
               </div>

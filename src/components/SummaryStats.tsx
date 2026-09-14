@@ -1,5 +1,7 @@
 import { TrendingUp, Shield, AlertTriangle, Phone, Network, Activity } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
+import type { DissectedPacket } from "@/lib/pcapParser";
+import type { CallFlowAnalyzerState } from "@/lib/callFlowAnalyzer";
 
 interface StatCardProps {
   title: string;
@@ -21,8 +23,8 @@ const StatCard = ({ title, value, change, icon: Icon, trend = 'neutral', alert =
   };
 
   const getTrendIcon = () => {
-    if (trend === 'up') return '↑';
-    if (trend === 'down') return '↓';
+    if (trend === 'up') return '↑ ';
+    if (trend === 'down') return '↓ ';
     return '';
   };
 
@@ -51,55 +53,78 @@ const StatCard = ({ title, value, change, icon: Icon, trend = 'neutral', alert =
   );
 };
 
-export const SummaryStats = () => {
+interface SummaryStatsProps {
+  packets: DissectedPacket[];
+  analyzerState: CallFlowAnalyzerState;
+}
+
+export const SummaryStats = ({ packets, analyzerState }: SummaryStatsProps) => {
+  const totalPackets = packets.length;
+  const activeCallsCount = analyzerState.activeCalls.size;
+  const encryptedCount = packets.filter(p => p.encrypted).length;
+  const encryptedPercent = totalPackets > 0 ? Math.round((encryptedCount / totalPackets) * 100) : 0;
+  
+  const alertsCount = packets.filter(p => p.suspicious).length;
+
+  const totalBytes = packets.reduce((acc, p) => acc + (p.size || 0), 0);
+  const formattedBytes = totalBytes > 1024 * 1024
+    ? `${(totalBytes / (1024 * 1024)).toFixed(2)} MB`
+    : `${(totalBytes / 1024).toFixed(1)} KB`;
+
+  const totalCalls = analyzerState.totalCalls;
+  const failedCalls = analyzerState.failedCalls;
+  const successRate = totalCalls > 0
+    ? `${Math.max(0, Math.round(((totalCalls - failedCalls) / totalCalls) * 100))}%`
+    : '100%';
+
   return (
     <div className="grid grid-cols-6 gap-4">
       <StatCard
         title="Total Packets"
-        value="24,537"
-        change="+12% vs last hour"
+        value={totalPackets.toLocaleString()}
+        change={totalPackets > 0 ? `${packets.filter(p => p.protocol === 'SIP').length} SIP / ${packets.filter(p => p.protocol === 'RTP').length} RTP` : 'Awaiting traffic'}
         icon={Network}
-        trend="up"
+        trend={totalPackets > 0 ? 'up' : 'neutral'}
       />
       
       <StatCard
         title="Active Calls"
-        value="47"
-        change="3 new calls"
+        value={activeCallsCount.toString()}
+        change={`${analyzerState.completedCalls.length} completed`}
         icon={Phone}
-        trend="up"
+        trend={activeCallsCount > 0 ? 'up' : 'neutral'}
       />
       
       <StatCard
         title="Encrypted Traffic"
-        value="68%"
-        change="+5% secure"
+        value={`${encryptedPercent}%`}
+        change={`${encryptedCount} TLS/SRTP pkts`}
         icon={Shield}
-        trend="up"
+        trend={encryptedPercent > 50 ? 'up' : 'neutral'}
       />
       
       <StatCard
-        title="Alerts"
-        value="12"
-        change="4 critical"
+        title="Alerts & Issues"
+        value={alertsCount.toString()}
+        change={alertsCount > 0 ? `${alertsCount} anomalies flagged` : 'Zero issues'}
         icon={AlertTriangle}
-        alert={true}
+        alert={alertsCount > 0}
       />
       
       <StatCard
-        title="Bandwidth"
-        value="1.2 Mbps"
-        change="Normal load"
+        title="Capture Volume"
+        value={formattedBytes}
+        change={`${totalBytes.toLocaleString()} bytes wire`}
         icon={Activity}
         trend="neutral"
       />
       
       <StatCard
         title="Success Rate"
-        value="94.2%"
-        change="-2.1% today"
+        value={successRate}
+        change={failedCalls > 0 ? `${failedCalls} failed calls` : 'All sessions healthy'}
         icon={TrendingUp}
-        trend="down"
+        trend={failedCalls > 0 ? 'down' : 'up'}
       />
     </div>
   );
