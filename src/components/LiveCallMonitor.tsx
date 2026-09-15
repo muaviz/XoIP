@@ -38,6 +38,19 @@ export const LiveCallMonitor = ({ analyzer, onCallSelect }: LiveCallMonitorProps
     return unsubscribe;
   }, [analyzer]);
 
+  useEffect(() => {
+    return () => {
+      if (audioSourceRef.current) {
+        try { audioSourceRef.current.stop(); } catch { /* ignore stop errors */ }
+        audioSourceRef.current = null;
+      }
+      if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+        try { audioContextRef.current.close(); } catch { /* ignore close errors */ }
+        audioContextRef.current = null;
+      }
+    };
+  }, []);
+
   const getCallStateColor = (state: CallSession['state']) => {
     switch (state) {
       case 'initiated': return 'text-blue-400';

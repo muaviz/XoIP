@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { TrendingUp, Shield, AlertTriangle, Phone, Network, Activity } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import type { DissectedPacket } from "@/lib/pcapParser";
@@ -59,18 +60,41 @@ interface SummaryStatsProps {
 }
 
 export const SummaryStats = ({ packets, analyzerState }: SummaryStatsProps) => {
-  const totalPackets = packets.length;
+  const metrics = useMemo(() => {
+    let sipCount = 0;
+    let rtpCount = 0;
+    let encryptedCount = 0;
+    let alertsCount = 0;
+    let totalBytes = 0;
+
+    for (let i = 0; i < packets.length; i++) {
+      const p = packets[i];
+      if (p.protocol === 'SIP') sipCount++;
+      else if (p.protocol === 'RTP') rtpCount++;
+      if (p.encrypted) encryptedCount++;
+      if (p.suspicious) alertsCount++;
+      totalBytes += (p.size || 0);
+    }
+
+    const totalPackets = packets.length;
+    const encryptedPercent = totalPackets > 0 ? Math.round((encryptedCount / totalPackets) * 100) : 0;
+    const formattedBytes = totalBytes > 1024 * 1024
+      ? `${(totalBytes / (1024 * 1024)).toFixed(2)} MB`
+      : `${(totalBytes / 1024).toFixed(1)} KB`;
+
+    return {
+      totalPackets,
+      sipCount,
+      rtpCount,
+      encryptedCount,
+      encryptedPercent,
+      alertsCount,
+      totalBytes,
+      formattedBytes
+    };
+  }, [packets]);
+
   const activeCallsCount = analyzerState.activeCalls.size;
-  const encryptedCount = packets.filter(p => p.encrypted).length;
-  const encryptedPercent = totalPackets > 0 ? Math.round((encryptedCount / totalPackets) * 100) : 0;
-  
-  const alertsCount = packets.filter(p => p.suspicious).length;
-
-  const totalBytes = packets.reduce((acc, p) => acc + (p.size || 0), 0);
-  const formattedBytes = totalBytes > 1024 * 1024
-    ? `${(totalBytes / (1024 * 1024)).toFixed(2)} MB`
-    : `${(totalBytes / 1024).toFixed(1)} KB`;
-
   const totalCalls = analyzerState.totalCalls;
   const failedCalls = analyzerState.failedCalls;
   const successRate = totalCalls > 0
@@ -81,10 +105,10 @@ export const SummaryStats = ({ packets, analyzerState }: SummaryStatsProps) => {
     <div className="grid grid-cols-6 gap-4">
       <StatCard
         title="Total Packets"
-        value={totalPackets.toLocaleString()}
-        change={totalPackets > 0 ? `${packets.filter(p => p.protocol === 'SIP').length} SIP / ${packets.filter(p => p.protocol === 'RTP').length} RTP` : 'Awaiting traffic'}
+        value={metrics.totalPackets.toLocaleString()}
+        change={metrics.totalPackets > 0 ? `${metrics.sipCount} SIP / ${metrics.rtpCount} RTP` : 'Awaiting traffic'}
         icon={Network}
-        trend={totalPackets > 0 ? 'up' : 'neutral'}
+        trend={metrics.totalPackets > 0 ? 'up' : 'neutral'}
       />
       
       <StatCard
@@ -97,24 +121,24 @@ export const SummaryStats = ({ packets, analyzerState }: SummaryStatsProps) => {
       
       <StatCard
         title="Encrypted Traffic"
-        value={`${encryptedPercent}%`}
-        change={`${encryptedCount} TLS/SRTP pkts`}
+        value={`${metrics.encryptedPercent}%`}
+        change={`${metrics.encryptedCount} TLS/SRTP pkts`}
         icon={Shield}
-        trend={encryptedPercent > 50 ? 'up' : 'neutral'}
+        trend={metrics.encryptedPercent > 50 ? 'up' : 'neutral'}
       />
       
       <StatCard
         title="Alerts & Issues"
-        value={alertsCount.toString()}
-        change={alertsCount > 0 ? `${alertsCount} anomalies flagged` : 'Zero issues'}
+        value={metrics.alertsCount.toString()}
+        change={metrics.alertsCount > 0 ? `${metrics.alertsCount} anomalies flagged` : 'Zero issues'}
         icon={AlertTriangle}
-        alert={alertsCount > 0}
+        alert={metrics.alertsCount > 0}
       />
       
       <StatCard
         title="Capture Volume"
-        value={formattedBytes}
-        change={`${totalBytes.toLocaleString()} bytes wire`}
+        value={metrics.formattedBytes}
+        change={`${metrics.totalBytes.toLocaleString()} bytes wire`}
         icon={Activity}
         trend="neutral"
       />

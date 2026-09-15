@@ -98,6 +98,20 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // POST /api/server/shutdown
+  if (req.method === 'POST' && url.pathname === '/api/server/shutdown') {
+    stopTcpdumpCapture();
+    if (udpSocket) {
+      try { udpSocket.close(); } catch { /* socket already closed */ }
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, message: 'XoIP capture server shutting down' }));
+    setTimeout(() => {
+      process.exit(0);
+    }, 150);
+    return;
+  }
+
   // POST /api/capture/packet (Ingest packet from external probe or softphone)
   if (req.method === 'POST' && url.pathname === '/api/capture/packet') {
     let body = '';
@@ -163,11 +177,44 @@ wss.on('connection', (ws: WebSocket) => {
   });
 });
 
+let lastBroadcastReset = Date.now();
+let packetsSentThisSecond = 0;
+const MAX_GENERIC_PACKETS_PER_SEC = 150; // Cap generic non-VoIP packets to 150/sec to protect client memory
+
 function broadcastPacket(packet: DissectedPacket) {
   packetsCaptured++;
-  const payload = JSON.stringify({ type: 'packet', packet });
+
+  const now = Date.now();
+  if (now - lastBroadcastReset >= 1000) {
+    lastBroadcastReset = now;
+    packetsSentThisSecond = 0;
+  }
+
+  // Always prioritize SIP and RTP voice packets. Throttle high-speed non-VoIP background traffic (e.g. video streams, downloads)
+  if (packet.protocol !== 'SIP' && packet.protocol !== 'RTP' && packet.protocol !== 'RTCP') {
+    if (packetsSentThisSecond >= MAX_GENERIC_PACKETS_PER_SEC) {
+      return; // Drop excessive background traffic to maintain smooth 60fps and low RAM
+    }
+  }
+
+  packetsSentThisSecond++;
+
+  // Create a lightweight wire-safe copy to prevent JSON ballooning and memory bloat
+  const wsPacket: DissectedPacket = {
+    ...packet,
+    rawBytes: undefined, // Drop duplicate full frame to save 90% WebSocket payload bandwidth
+    payloadBytes: packet.payloadBytes && packet.payloadBytes.length > 256 && packet.protocol !== 'SIP' && packet.protocol !== 'RTP'
+      ? packet.payloadBytes.subarray(0, 256)
+      : packet.payloadBytes
+  };
+
+  const payload = JSON.stringify({ type: 'packet', packet: wsPacket });
   for (const client of wss.clients) {
     if (client.readyState === WebSocket.OPEN) {
+      // Backpressure protection: If client write buffer exceeds 128KB, drop packet instead of queuing in RAM
+      if (client.bufferedAmount > 128 * 1024) {
+        continue;
+      }
       client.send(payload);
     }
   }
@@ -181,6 +228,19 @@ function getNetworkInterfaces(): string[] {
 }
 
 /**
+ * Ensures tcpdump BPF filter NEVER captures the capture server's own WebSocket or dev ports,
+ * which would trigger an exponential infinite feedback loop!
+ */
+function sanitizeBpfFilter(userFilter?: string): string {
+  const selfExclude = `not (port ${PORT} or port 8080 or port 5173)`;
+  if (!userFilter || userFilter.trim() === '' || userFilter === 'all' || userFilter === 'ip or ip6') {
+    return `(ip or ip6) and ${selfExclude}`;
+  }
+  // Exclude our own ports from any custom filter
+  return `(${userFilter}) and ${selfExclude}`;
+}
+
+/**
  * Starts live packet capture using tcpdump if permitted
  */
 function startTcpdumpCapture(iface: string = 'any', filter: string = 'ip or ip6'): boolean {
@@ -189,11 +249,12 @@ function startTcpdumpCapture(iface: string = 'any', filter: string = 'ip or ip6'
   }
 
   activeInterface = iface;
-  console.log(`[XoIP Server] Starting live capture on interface '${iface}' with filter '${filter}'...`);
+  const safeFilter = sanitizeBpfFilter(filter);
+  console.log(`[XoIP Server] Starting live capture on interface '${iface}' with filter '${safeFilter}'...`);
 
   try {
     // -U: unbuffered output, -w -: write raw pcap stream to stdout, -s 0: full packet snapshot
-    const args = ['-i', iface, '-U', '-w', '-', '-s', '0', filter];
+    const args = ['-i', iface, '-U', '-w', '-', '-s', '0', safeFilter];
     tcpdumpProcess = spawn('tcpdump', args, { stdio: ['ignore', 'pipe', 'pipe'] });
 
     let pcapHeaderRead = false;
@@ -235,6 +296,16 @@ function startTcpdumpCapture(iface: string = 'any', filter: string = 'ip or ip6'
         if (dissected) {
           broadcastPacket(dissected);
         }
+      }
+
+      // Release parent buffer references to allow V8 garbage collector to free memory
+      if (leftoverBuffer.length > 1024 * 1024) {
+        // Prevent buffer runaway if stream is corrupted
+        leftoverBuffer = Buffer.alloc(0);
+      } else if (leftoverBuffer.length > 0) {
+        leftoverBuffer = Buffer.from(leftoverBuffer);
+      } else {
+        leftoverBuffer = Buffer.alloc(0);
       }
     });
 
@@ -385,18 +456,39 @@ async function replaySampleTrace() {
     const fileBytes = fs.readFileSync(samplePath);
     const parsed = await PcapParser.parse(fileBytes.buffer);
 
-    console.log(`[XoIP Server] Replaying ${parsed.packets.length} genuine VoIP packets over WebSocket...`);
+    const sessionRunId = Date.now().toString(36);
+    const newCallId = `live-call-${Date.now()}@192.168.1.100`;
+    console.log(`[XoIP Server] Replaying ${parsed.packets.length} genuine VoIP packets over WebSocket (Session Call-ID: ${newCallId})...`);
+    
     let lastTime = parsed.packets[0]?.rawTimestampMs || 0;
+    let idx = 0;
 
-    for (const pkt of parsed.packets) {
-      const delta = pkt.rawTimestampMs - lastTime;
-      const delay = Math.min(600, Math.max(25, delta));
-      lastTime = pkt.rawTimestampMs;
+    for (const originalPkt of parsed.packets) {
+      idx++;
+      const delta = originalPkt.rawTimestampMs - lastTime;
+      const delay = Math.min(400, Math.max(25, delta));
+      lastTime = originalPkt.rawTimestampMs;
       await new Promise(r => setTimeout(r, delay));
 
-      // Update to current live timestamp
-      pkt.timestamp = new Date().toISOString();
-      pkt.rawTimestampMs = Date.now();
+      const now = Date.now();
+      const pkt: DissectedPacket = {
+        ...originalPkt,
+        id: `live-sample-${sessionRunId}-${idx}`,
+        timestamp: new Date(now).toISOString(),
+        rawTimestampMs: now,
+        metadata: {
+          ...originalPkt.metadata,
+          ...(originalPkt.metadata?.['Call-ID'] ? { 'Call-ID': newCallId } : {})
+        }
+      };
+
+      // Update SIP headers in payload bytes if present
+      if (pkt.protocol === 'SIP' && pkt.payloadBytes) {
+        const text = new TextDecoder().decode(pkt.payloadBytes);
+        const updatedText = text.replace(/Call-ID:\s*[^\r\n]+/i, `Call-ID: ${newCallId}`);
+        pkt.payloadBytes = new TextEncoder().encode(updatedText);
+      }
+
       broadcastPacket(pkt);
     }
     console.log('[XoIP Server] Replay completed.');

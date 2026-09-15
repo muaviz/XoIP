@@ -99,6 +99,42 @@ export class AudioDecoder {
     return new Blob([buffer], { type: 'audio/wav' });
   }
 
+  /**
+   * Generates normalized waveform amplitude bars (0.0 to 1.0) for visual audio rendering
+   */
+  static calculateWaveform(audioBytes: Uint8Array, payloadType: number = 0, numBars: number = 80): number[] {
+    if (!audioBytes || audioBytes.length === 0) {
+      return new Array(numBars).fill(0.05);
+    }
+
+    const isAlaw = payloadType === 8;
+    const table = isAlaw ? ALAW_TO_LINEAR : ULAW_TO_LINEAR;
+    const samplesPerBar = Math.floor(audioBytes.length / numBars);
+    if (samplesPerBar <= 0) {
+      return new Array(numBars).fill(0.05);
+    }
+
+    const waveform: number[] = [];
+    for (let bar = 0; bar < numBars; bar++) {
+      const start = bar * samplesPerBar;
+      const end = Math.min(audioBytes.length, start + samplesPerBar);
+      let peak = 0;
+
+      for (let i = start; i < end; i++) {
+        const absVal = Math.abs(table[audioBytes[i]]);
+        if (absVal > peak) {
+          peak = absVal;
+        }
+      }
+
+      // Normalize to 0.05 - 1.0
+      const normalized = Math.max(0.05, Math.min(1.0, peak / 32768.0));
+      waveform.push(normalized);
+    }
+
+    return waveform;
+  }
+
   private static writeString(view: DataView, offset: number, string: string) {
     for (let i = 0; i < string.length; i++) {
       view.setUint8(offset + i, string.charCodeAt(i));

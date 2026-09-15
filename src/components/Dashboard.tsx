@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { 
@@ -13,8 +13,13 @@ import {
   FileDown, 
   FileSpreadsheet, 
   FileCode2,
-  CheckCircle2,
-  AlertCircle
+  CheckCircle2, 
+  AlertCircle,
+  Layers,
+  Waves,
+  ShieldAlert,
+  Zap,
+  List
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -24,12 +29,18 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Badge } from "@/components/ui/badge";
 import { FileUpload } from "./FileUpload";
 import { PacketLog } from "./PacketLog";
 import { FiltersSidebar, type FilterState } from "./FiltersSidebar";
 import { LiveCallMonitor } from "./LiveCallMonitor";
 import { SummaryStats } from "./SummaryStats";
-import { CallFlowAnalyzer, type CallFlowAnalyzerState } from "@/lib/callFlowAnalyzer";
+import { CallFlowDiagram } from "./CallFlowDiagram";
+import { RtpStreamAnalyzer } from "./RtpStreamAnalyzer";
+import { SecurityThreatsView } from "./SecurityThreatsView";
+import { PacketDetailsModal } from "./PacketDetailsModal";
+import { CallFlowAnalyzer, type CallFlowAnalyzerState, type CallSession } from "@/lib/callFlowAnalyzer";
 import { PcapParser, normalizePacket, type DissectedPacket } from "@/lib/pcapParser";
 import { useToast } from "@/hooks/use-toast";
 
@@ -41,6 +52,11 @@ export const Dashboard = () => {
   const [isParsingFile, setIsParsingFile] = useState(false);
   const [packets, setPackets] = useState<DissectedPacket[]>([]);
   const [selectedCallId, setSelectedCallId] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<string>("packets");
+
+  // Deep Modal Inspector State
+  const [inspectedPacket, setInspectedPacket] = useState<DissectedPacket | null>(null);
+  const [isModalOpen, setIsModalOpen] = useState(false);
 
   // Live WebSocket capture state
   const [wsConnected, setWsConnected] = useState(false);
@@ -50,6 +66,7 @@ export const Dashboard = () => {
   const [isCapturingBackend, setIsCapturingBackend] = useState(false);
   const [captureError, setCaptureError] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   const [filters, setFilters] = useState<FilterState>({
     protocols: [],
@@ -71,6 +88,41 @@ export const Dashboard = () => {
       unsub();
       clearInterval(cleanupInterval);
     };
+  }, []);
+
+  // Global Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // '/' to focus search
+      if (e.key === '/' && document.activeElement !== searchInputRef.current) {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  // High-performance batched packet ingestion queue (flushes at 10Hz to prevent CPU/RAM thrashing)
+  const packetQueueRef = useRef<DissectedPacket[]>([]);
+
+  useEffect(() => {
+    const flushInterval = setInterval(() => {
+      if (packetQueueRef.current.length === 0) return;
+      const batch = packetQueueRef.current;
+      packetQueueRef.current = [];
+
+      // Process in call analyzer as a single batch
+      callAnalyzer.current.processBatch(batch);
+
+      // Batch update React state and cap active memory buffer to 500 packets (prevents RAM bloat)
+      setPackets(prev => {
+        const combined = [...batch.reverse(), ...prev];
+        return combined.length > 500 ? combined.slice(0, 500) : combined;
+      });
+    }, 100);
+
+    return () => clearInterval(flushInterval);
   }, []);
 
   // Connect to Live Capture WebSocket Server when Live mode is toggled
@@ -97,8 +149,8 @@ export const Dashboard = () => {
             const data = JSON.parse(event.data);
             if (data.type === 'packet' && data.packet) {
               const pkt: DissectedPacket = normalizePacket(data.packet);
-              setPackets(prev => [pkt, ...prev].slice(0, 5000));
-              callAnalyzer.current.processPacket(pkt);
+              // Push to high-speed batch queue instead of triggering immediate re-render
+              packetQueueRef.current.push(pkt);
             } else if (data.type === 'connected' || data.type === 'capture_state') {
               if (data.status) {
                 if (data.status.availableInterfaces) setLiveInterfaces(data.status.availableInterfaces);
@@ -153,11 +205,12 @@ export const Dashboard = () => {
 
   const startInterfaceCapture = () => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      let bpf = 'ip or ip6';
+      // Exclude self ports to eliminate infinite packet feedback
+      let bpf = '(ip or ip6) and not (port 8081 or port 8080 or port 5173)';
       if (captureFilter === 'voip') {
         bpf = 'port 5060 or port 5061 or port 5080 or (udp and portrange 10000-20000)';
       } else if (captureFilter === 'udp') {
-        bpf = 'udp';
+        bpf = 'udp and not (port 8081 or port 8080 or port 5173)';
       } else if (captureFilter === 'web') {
         bpf = 'port 53 or port 80 or port 443';
       }
@@ -204,11 +257,9 @@ export const Dashboard = () => {
       const buffer = fileOrData instanceof File ? await fileOrData.arrayBuffer() : fileOrData.buffer;
       const result = await PcapParser.parse(buffer);
 
-      // Reset analyzer and feed real dissected packets
+      // Reset analyzer and feed real dissected packets as a batch
       callAnalyzer.current.reset();
-      for (const pkt of result.packets) {
-        callAnalyzer.current.processPacket(pkt);
-      }
+      callAnalyzer.current.processBatch(result.packets);
 
       setPackets(result.packets);
 
@@ -230,6 +281,7 @@ export const Dashboard = () => {
   }, [toast]);
 
   const handleClearWorkspace = () => {
+    packetQueueRef.current = [];
     setPackets([]);
     setSelectedFileName(null);
     setSelectedCallId(null);
@@ -242,6 +294,19 @@ export const Dashboard = () => {
 
   const handleCallSelect = (callId: string) => {
     setSelectedCallId(callId === selectedCallId ? null : callId);
+  };
+
+  const handleInspectPacket = (packet: DissectedPacket) => {
+    setInspectedPacket(packet);
+    setIsModalOpen(true);
+  };
+
+  const handleQuickFilter = (filterTerm: string) => {
+    setSearchQuery(filterTerm);
+    toast({
+      title: "Filter Applied",
+      description: `Filtering telemetry by '${filterTerm}'`
+    });
   };
 
   // Export handlers
@@ -325,6 +390,22 @@ export const Dashboard = () => {
     toast({ title: "CSV Exported", description: `Exported ${packets.length} packet rows.` });
   };
 
+  const allCalls = useMemo(() => {
+    const list: CallSession[] = [
+      ...Array.from(analyzerState.activeCalls.values()),
+      ...analyzerState.completedCalls
+    ];
+    return list;
+  }, [analyzerState]);
+
+  const suspiciousCount = useMemo(() => {
+    return packets.filter(p => p.suspicious).length;
+  }, [packets]);
+
+  const rtpCallsCount = useMemo(() => {
+    return allCalls.filter(c => (c.rtpPacketsCount || 0) > 0 || (c.audioBytesList && c.audioBytesList.length > 0)).length;
+  }, [allCalls]);
+
   return (
     <div className="min-h-screen bg-background terminal-grid">
       {/* Header */}
@@ -347,10 +428,11 @@ export const Dashboard = () => {
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
-                  placeholder="Filter by IP, port, protocol, Call-ID, method..."
+                  ref={searchInputRef}
+                  placeholder="Search IP, port, Call-ID, method... (Press '/' to focus)"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pl-10 w-72 bg-secondary/50 border-primary/20 focus:border-primary text-xs font-mono"
+                  className="pl-10 w-80 bg-secondary/50 border-primary/20 focus:border-primary text-xs font-mono"
                 />
               </div>
               
@@ -459,25 +541,32 @@ export const Dashboard = () => {
             {/* Live Capture Control Banner */}
             {liveCaptureMode && (
               <div className="bg-card/90 border border-primary/40 rounded-lg p-4 cyber-glow space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
+                <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4">
+                  {/* Telemetry Server Status Info */}
+                  <div className="flex items-center gap-3 shrink-0">
                     {wsConnected ? (
-                      <div className="p-2 rounded-full bg-success/20 text-success">
+                      <div className="p-2.5 rounded-full bg-success/20 text-success shrink-0">
                         <Wifi className="h-5 w-5" />
                       </div>
                     ) : (
-                      <div className="p-2 rounded-full bg-destructive/20 text-destructive">
+                      <div className="p-2.5 rounded-full bg-destructive/20 text-destructive shrink-0">
                         <WifiOff className="h-5 w-5" />
                       </div>
                     )}
-                    <div>
-                      <h3 className="text-sm font-semibold text-primary flex items-center gap-2">
-                        Live Network Telemetry
-                        <span className={`text-[11px] px-2 py-0.5 rounded-full font-mono ${wsConnected ? 'bg-success/20 text-success' : 'bg-destructive/20 text-destructive'}`}>
+                    <div className="space-y-1 min-w-0">
+                      <div className="flex flex-wrap items-center gap-2.5">
+                        <span className="text-sm font-bold text-primary whitespace-nowrap">
+                          Live Network Telemetry
+                        </span>
+                        <span className={`inline-flex items-center text-[11px] font-mono px-2.5 py-0.5 rounded-full whitespace-nowrap font-medium ${
+                          wsConnected 
+                            ? 'bg-success/15 text-success border border-success/30' 
+                            : 'bg-destructive/15 text-destructive border border-destructive/30'
+                        }`}>
                           {wsConnected ? 'WebSocket Connected (Port 8081)' : 'Server Disconnected'}
                         </span>
-                      </h3>
-                      <p className="text-xs text-muted-foreground">
+                      </div>
+                      <p className="text-xs text-muted-foreground font-mono">
                         {wsConnected 
                           ? `Ingesting live packets via UDP port 5060 socket listener & system sniffer` 
                           : `Capture daemon not connected on ws://localhost:8081. Start backend with 'npm run capture'`}
@@ -485,12 +574,13 @@ export const Dashboard = () => {
                     </div>
                   </div>
 
+                  {/* Interface Sniffer Controls */}
                   {wsConnected && (
-                    <div className="flex items-center gap-2 font-mono text-xs">
+                    <div className="flex flex-wrap items-center gap-2 font-mono text-xs">
                       <select 
                         value={selectedInterface} 
                         onChange={(e) => setSelectedInterface(e.target.value)}
-                        className="bg-secondary/60 border border-primary/30 rounded px-2.5 py-1 text-foreground focus:outline-none focus:border-primary"
+                        className="bg-secondary/70 border border-primary/30 rounded px-2.5 py-1.5 text-foreground focus:outline-none focus:border-primary text-xs"
                         disabled={isCapturingBackend}
                       >
                         {liveInterfaces.map(iface => (
@@ -501,7 +591,7 @@ export const Dashboard = () => {
                       <select 
                         value={captureFilter} 
                         onChange={(e) => setCaptureFilter(e.target.value)}
-                        className="bg-secondary/60 border border-primary/30 rounded px-2.5 py-1 text-foreground focus:outline-none focus:border-primary"
+                        className="bg-secondary/70 border border-primary/30 rounded px-2.5 py-1.5 text-foreground focus:outline-none focus:border-primary text-xs"
                         disabled={isCapturingBackend}
                       >
                         <option value="all">Traffic: All IP Packets (Instant)</option>
@@ -511,11 +601,11 @@ export const Dashboard = () => {
                       </select>
 
                       {!isCapturingBackend ? (
-                        <Button size="sm" onClick={startInterfaceCapture} className="bg-primary text-primary-foreground text-xs">
+                        <Button size="sm" onClick={startInterfaceCapture} className="bg-primary text-primary-foreground text-xs whitespace-nowrap px-3">
                           Start Sniffing ({selectedInterface})
                         </Button>
                       ) : (
-                        <Button size="sm" variant="destructive" onClick={stopInterfaceCapture} className="text-xs">
+                        <Button size="sm" variant="destructive" onClick={stopInterfaceCapture} className="text-xs whitespace-nowrap px-3">
                           Stop Sniffing
                         </Button>
                       )}
@@ -523,10 +613,10 @@ export const Dashboard = () => {
                         size="sm" 
                         variant="outline" 
                         onClick={triggerLiveSample} 
-                        className="border-primary/40 text-primary text-xs hover:bg-primary/10"
+                        className="border-primary/40 text-primary text-xs hover:bg-primary/10 whitespace-nowrap px-3"
                         title="Stream real SIP and RTP voice packets over the live WebSocket"
                       >
-                        <Radio className="h-3.5 w-3.5 mr-1 text-primary animate-pulse-alert" />
+                        <Radio className="h-3.5 w-3.5 mr-1.5 text-primary animate-pulse-alert" />
                         Stream Sample Call
                       </Button>
                     </div>
@@ -556,17 +646,87 @@ export const Dashboard = () => {
               </div>
             )}
             
-            {/* Packet Log */}
-            <PacketLog 
-              packets={packets}
-              isLiveMode={liveCaptureMode}
-              searchQuery={searchQuery}
-              filters={filters}
-              selectedCallId={selectedCallId}
-            />
+            {/* Multi-Tab Forensic Views Container */}
+            {packets.length > 0 && (
+              <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
+                <TabsList className="bg-card/70 border border-primary/20 p-1 grid grid-cols-4 w-full font-mono">
+                  <TabsTrigger value="packets" className="text-xs data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
+                    <List className="h-3.5 w-3.5 mr-1.5" />
+                    Packet Log ({packets.length})
+                  </TabsTrigger>
+                  
+                  <TabsTrigger value="callflow" className="text-xs data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
+                    <Layers className="h-3.5 w-3.5 mr-1.5" />
+                    SIP Ladder Flow ({allCalls.length})
+                  </TabsTrigger>
+
+                  <TabsTrigger value="rtp" className="text-xs data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
+                    <Waves className="h-3.5 w-3.5 mr-1.5" />
+                    RTP Quality & Audio ({rtpCallsCount})
+                  </TabsTrigger>
+
+                  <TabsTrigger value="threats" className={`text-xs ${suspiciousCount > 0 ? 'text-destructive font-bold' : ''} data-[state=active]:bg-primary data-[state=active]:text-primary-foreground`}>
+                    <ShieldAlert className="h-3.5 w-3.5 mr-1.5" />
+                    Threats & Anomalies ({suspiciousCount})
+                  </TabsTrigger>
+                </TabsList>
+
+                {/* Tab 1: Packet Dissection Log */}
+                <TabsContent value="packets" className="m-0">
+                  <PacketLog 
+                    packets={packets}
+                    isLiveMode={liveCaptureMode}
+                    searchQuery={searchQuery}
+                    filters={filters}
+                    selectedCallId={selectedCallId}
+                    onInspectPacket={handleInspectPacket}
+                    onQuickFilter={handleQuickFilter}
+                  />
+                </TabsContent>
+
+                {/* Tab 2: SIP Call Flow Sequence Diagram */}
+                <TabsContent value="callflow" className="m-0">
+                  <CallFlowDiagram 
+                    calls={allCalls}
+                    selectedCallId={selectedCallId}
+                    onSelectCall={handleCallSelect}
+                    packets={packets}
+                    onInspectPacket={handleInspectPacket}
+                  />
+                </TabsContent>
+
+                {/* Tab 3: RTP Stream Quality & Audio Waveform */}
+                <TabsContent value="rtp" className="m-0">
+                  <RtpStreamAnalyzer 
+                    calls={allCalls}
+                    selectedCallId={selectedCallId}
+                    onSelectCall={handleCallSelect}
+                  />
+                </TabsContent>
+
+                {/* Tab 4: Security Threats & Incident Report */}
+                <TabsContent value="threats" className="m-0">
+                  <SecurityThreatsView 
+                    packets={packets}
+                    onInspectPacket={handleInspectPacket}
+                  />
+                </TabsContent>
+              </Tabs>
+            )}
           </div>
         </div>
       </div>
+
+      {/* Full-Featured Deep Packet Details & Hex Modal */}
+      <PacketDetailsModal
+        packet={inspectedPacket}
+        isOpen={isModalOpen}
+        onClose={() => setIsModalOpen(false)}
+        onFilterByValue={(field, val) => {
+          setIsModalOpen(false);
+          handleQuickFilter(val);
+        }}
+      />
     </div>
   );
 };
